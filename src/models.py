@@ -47,6 +47,7 @@ class TransformerNN(nn.Module):
             use_cache=False,
         )
         self.name = f"gpt2_nn_embd={n_embd}_layer={n_layer}_head={n_head}"
+        self.hidden_layer_size = hidden_layer_size
 
         self.n_dims = n_dims
         self.n_positions = n_positions
@@ -54,43 +55,63 @@ class TransformerNN(nn.Module):
         self.n_in_intermediate = n_in_intermediate
         self.n_out_intermediate = min(n_in_intermediate, n_out_intermediate)
 
-        self._read_in_x = nn.Linear(n_dims, n_embd)
-        self._read_in_y = nn.Linear(1, n_embd)
+        
+        self._read_in = nn.Linear(n_dims, n_embd)
         self._backbone = GPT2Model(configuration)
         self._read_out = nn.Linear(n_embd, 1)
+        
+        self._x_read_out = nn.Linear(n_embd, n_dims)
+        
 
         # if hidden_sep_embed is True: different intermediate inputs/outputs use different embedding layers
         # else: all the intermediate inputs/outputs use the same embedding layer
         self.hidden_sep_embed = hidden_sep_embed
         if hidden_sep_embed:
-            self._read_in_hidden = nn.ModuleList(
-                [nn.Linear(hidden_layer_size, n_embd) for i in range(self.n_in_intermediate)]
-            )
+            # self._read_in_hidden = nn.ModuleList(
+            #     [nn.Linear(hidden_layer_size, n_embd) for i in range(self.n_in_intermediate)]
+            # )
             self._read_out_hidden = nn.ModuleList(
                 [nn.Linear(n_embd, hidden_layer_size) for i in range(self.n_out_intermediate)]
             )
         else:
-            if self.n_in_intermediate > 0:
-                self._read_in_hidden = nn.Linear(hidden_layer_size, n_embd)
+            # if self.n_in_intermediate > 0:
+            #     self._read_in_hidden = nn.Linear(hidden_layer_size, n_embd)
             if self.n_out_intermediate > 0:
                 self._read_out_hidden = nn.Linear(n_embd, hidden_layer_size)
 
     def _combine_embed(self, xs_b, ys_b, layer_activations=None):
         bsize, points, dim = xs_b.shape
-        xs_embed = self._read_in_x(xs_b)
+        xs_embed = self._read_in(xs_b)
         stacked_tensors = [xs_embed]
 
         if self.n_in_intermediate > 0:
             ss_embeds = []
             for i in range(self.n_in_intermediate):
                 act = layer_activations[i]
+                act_wide = torch.cat(
+                        (
+                            act.view(bsize, points, self.hidden_layer_size),
+                            torch.zeros(bsize, points, dim - self.hidden_layer_size, device=ys_b.device),
+                        ),
+                        axis=2,
+                    )
                 if self.hidden_sep_embed:
-                    ss_embeds.append(self._read_in_hidden[i](act))
+                    ss_embeds.append(self._read_in[i](act_wide))
                 else:
-                    ss_embeds.append(self._read_in_hidden(act))
+                    
+                    ss_embeds.append(self._read_in(act_wide))
+                    
             stacked_tensors += ss_embeds
+        ys_b_wide = torch.cat(
+            (
+                ys_b.view(bsize, points, 1),
+                torch.zeros(bsize, points, dim - 1, device=ys_b.device),
+            ),
+            axis=2,
+        )
         
-        ys_embed = self._read_in_y(ys_b.reshape(bsize, points, 1))
+        #ys_embed = self._read_in(ys_b.reshape(bsize, points, 1))
+        ys_embed = self._read_in(ys_b_wide)
         stacked_tensors += [ys_embed]
 
         zs_embed = torch.stack(stacked_tensors, dim=2)
@@ -107,7 +128,7 @@ class TransformerNN(nn.Module):
         embeds = self._combine_embed(xs, ys, layer_activations)
         output = self._backbone(inputs_embeds=embeds).last_hidden_state
         
-        # calculate training loss
+        # calculate training loss: this training loss includes loss for x, y, z
         losses = []
         for i in range(self.n_out_intermediate):
             if self.hidden_sep_embed:
@@ -116,6 +137,8 @@ class TransformerNN(nn.Module):
                 pred_hidden = self._read_out_hidden(output[:, i:][:, ::x_idx_freq])
             losses += [loss_func(pred_hidden, layer_activations[i]).sum(-1).mean()]
         pred = self._read_out(output[:, self.n_out_intermediate:][:, ::x_idx_freq])
+        pred_x = self._x_read_out(output[:, (1+self.n_out_intermediate):][:, ::x_idx_freq])
+        losses += [loss_func(pred_x, xs).sum(-1).mean()]
         losses += [loss_func(pred[:,:,0], ys).mean()]
         return losses, sum(losses)  
     

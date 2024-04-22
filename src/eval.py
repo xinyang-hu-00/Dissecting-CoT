@@ -46,10 +46,11 @@ def get_model_from_run(run_path, step=-1, only_conf=False):
 
 def eval_batch(model, task_sampler, xs, task_name=None):
     task = task_sampler()
-    if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2"]:
-        device = "cuda"
-    else:
-        device = "cpu"
+    # if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2"]:
+    #     device = "cuda"
+    # else:
+    #     device = "cpu"
+    device = "cpu"
     if task_name in ['relu_nn_regression']:
         ys, layer_activations = task.evaluate(xs)
         layer_activations = [act.to(device) for act in layer_activations]
@@ -142,7 +143,8 @@ def compute_evals(model, evaluation_kwargs, save_path=None):
 
 def get_run_metrics(run_path, step=-1, cache=True):
     model, conf = get_model_from_run(run_path, step)
-    model = model.cuda().eval()
+    #model = model.cuda().eval()
+    model = model.eval()
     evaluation_kwargs = build_evals(conf)
 
     if not cache:

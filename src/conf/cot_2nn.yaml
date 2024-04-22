@@ -4,7 +4,7 @@ inherit:
 
 wandb:
     project: cot_2nn
-    entity: your entity
+    entity: xinyang-hu
     log_every_steps: 100
     name: small, CoT-I/O, d=10, k=4
     notes: 
